@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nexops-config
+data:
+  NEXOPS_ENV: production
+  NEXOPS_RUN_WORKER_IN_API: "false"
+  NEXOPS_MONITOR_INTERVAL_SECONDS: "15"
+  KUBERNETES_ENABLED: "true"
+  KUBERNETES_IN_CLUSTER: "true"
+  DOCKER_ENABLED: "false"
+  AWS_INTEGRATION_ENABLED: "false"
+  # Prometheus and Jaeger from ../observability; logs are read from pods through the Kubernetes API.
+  PROMETHEUS_URL: http://prometheus.observability.svc:9090
+  PROMETHEUS_RATE_WINDOW: 1m
+  JAEGER_URL: http://jaeger.observability.svc:16686
+  JAEGER_UI_URL: http://localhost:16686
+  GROQ_MODEL: openai/gpt-oss-120b
+# Secrets (nexops-secrets) are created by scripts/k8s/kind-up.sh or eks-up.sh from deploy/.env / SSM, never committed:
+#   DATABASE_URL NEXOPS_DB_PASSWORD NEXOPS_SECRET_KEY NEXOPS_WEBHOOK_SECRET NEXOPS_ADMIN_EMAIL NEXOPS_ADMIN_PASSWORD
+#   NEXOPS_PUBLIC_URL NEXOPS_FLAGS_TOKEN NEXOPS_ANALYSIS_TOKEN NEXOPS_NOTIFY_WEBHOOK_URL GROQ_API_KEY GITHUB_TOKEN

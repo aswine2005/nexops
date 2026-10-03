@@ -1,0 +1,23 @@
+# The monitor loop; replicas > 1 are safe (a PostgreSQL advisory lock elects one active monitor).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nexops-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: nexops-worker }
+  template:
+    metadata:
+      labels: { app: nexops-worker }
+    spec:
+      serviceAccountName: nexops
+      securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+      containers:
+        - name: worker
+          image: nexops-api
+          command: ["python", "-m", "app.worker"]
+          envFrom: [{ configMapRef: { name: nexops-config } }, { secretRef: { name: nexops-secrets } }]
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { memory: 512Mi }

@@ -1,0 +1,81 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-api
+  labels: { app: payment-api }
+spec:
+  # Selects stable and canary pods alike: without a traffic router Argo splits traffic by replica count.
+  selector: { app: payment-api }
+  ports: [{ name: http, port: 8000, targetPort: 8000 }]
+---
+# Progressive delivery: 25% canary -> NexOps analysis -> 50% -> NexOps analysis -> 100%.
+# A "fail" verdict from NexOps aborts the rollout and scales the canary away; stable pods never stop serving.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: payment-api
+  labels: { app: payment-api, nexops.application: payment-api }
+spec:
+  replicas: 4
+  revisionHistoryLimit: 5
+  # Rolling back to any of the last 3 revisions (what NexOps does) skips the canary steps.
+  rollbackWindow: { revisions: 3 }
+  progressDeadlineSeconds: 300
+  progressDeadlineAbort: true
+  selector:
+    matchLabels: { app: payment-api }
+  strategy:
+    canary:
+      maxSurge: 1
+      maxUnavailable: 0
+      steps:
+        - setWeight: 25
+        - pause: { duration: 20s }
+        - analysis:
+            templates: [{ templateName: nexops-canary }]
+            args:
+              - name: canary-hash
+                valueFrom: { podTemplateHashValue: Latest }
+              - name: stable-hash
+                valueFrom: { podTemplateHashValue: Stable }
+        - setWeight: 50
+        - pause: { duration: 20s }
+        - analysis:
+            templates: [{ templateName: nexops-canary }]
+            args:
+              - name: canary-hash
+                valueFrom: { podTemplateHashValue: Latest }
+              - name: stable-hash
+                valueFrom: { podTemplateHashValue: Stable }
+  template:
+    metadata:
+      labels: { app: payment-api, nexops.application: payment-api }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: /metrics
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+      containers:
+        - name: payment-api
+          image: payment-api
+          ports: [{ name: http, containerPort: 8000 }]
+          env:
+            - { name: DB_HOST, value: payments-db }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: payments-db, key: password } }
+            - { name: DEPLOY_ENVIRONMENT, value: production }
+            - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://jaeger.observability.svc:4318" }
+            - { name: NEXOPS_FLAGS_URL, value: "http://nexops-api.nexops.svc:8000/api/flags/evaluate?application=payment-api" }
+            - name: NEXOPS_FLAGS_TOKEN
+              valueFrom: { secretKeyRef: { name: nexops-tokens, key: flags-token } }
+          readinessProbe:
+            httpGet: { path: /ready, port: 8000 }
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 256Mi }

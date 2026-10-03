@@ -1,0 +1,85 @@
+# HTTPS entry point: an internet-facing Network Load Balancer with fixed Elastic IPs (created by the AWS Load Balancer
+# Controller from this Service) in front of Caddy, which gets a Let's Encrypt certificate for <elastic-ip>.sslip.io
+# and proxies to the NexOps web/API. scripts/k8s/cluster.py fills in the UPPER_CASE placeholders and, once the
+# certificate is issued, limits the load balancer to your IP (loadBalancerSourceRanges).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: caddy
+  namespace: nexops
+data:
+  Caddyfile: |
+    {
+    	email {$ACME_EMAIL}
+    }
+
+    {$NEXOPS_DOMAIN} {
+    	encode gzip
+    	header Strict-Transport-Security "max-age=31536000"
+    	reverse_proxy nexops-web.nexops.svc.cluster.local:80
+    }
+
+    # The bare IPs and any other HTTP request go to the canonical HTTPS name.
+    http:// {
+    	redir https://{$NEXOPS_DOMAIN}{uri} 308
+    }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: caddy
+  namespace: nexops
+spec:
+  serviceName: caddy
+  replicas: 1
+  selector:
+    matchLabels: { app: caddy }
+  template:
+    metadata:
+      labels: { app: caddy }
+    spec:
+      containers:
+        - name: caddy
+          image: caddy:2.8-alpine  # same as the EC2 host
+          args: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+          env:
+            - { name: NEXOPS_DOMAIN, value: NEXOPS_DOMAIN_NAME }
+            - name: ACME_EMAIL
+              valueFrom: { secretKeyRef: { name: nexops-secrets, key: NEXOPS_ADMIN_EMAIL } }
+          ports: [{ containerPort: 80 }, { containerPort: 443 }]
+          readinessProbe:
+            tcpSocket: { port: 80 }
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          volumeMounts:
+            - { name: config, mountPath: /etc/caddy }
+            - { name: data, mountPath: /data }  # certificates survive restarts (no re-issue, no rate limits)
+      volumes:
+        - name: config
+          configMap: { name: caddy }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 1Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nexops-edge
+  namespace: nexops
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: external
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+    service.beta.kubernetes.io/aws-load-balancer-subnets: EDGE_SUBNETS
+    service.beta.kubernetes.io/aws-load-balancer-eip-allocations: EDGE_EIP_ALLOCATIONS
+    # Either Elastic IP must reach Caddy, whichever zone its pod runs in.
+    service.beta.kubernetes.io/aws-load-balancer-attributes: load_balancing.cross_zone.enabled=true
+spec:
+  type: LoadBalancer
+  selector: { app: caddy }
+  ports:
+    - { name: http, port: 80, targetPort: 80 }
+    - { name: https, port: 443, targetPort: 443 }

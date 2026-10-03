@@ -1,0 +1,27 @@
+# Local home for the ONLINE NexOps data (incidents, deployments, applications, flags, users...).
+# `python3 scripts/aws/hosted.py down` copies the cloud database here before deleting everything in AWS;
+# `python3 scripts/aws/hosted.py up` copies it back. Nothing is backed up in the cloud.
+# Separate from the local NexOps database (deploy/docker-compose.yml), so neither overwrites the other.
+# Start/stop it in Docker Desktop like any container; `docker compose ... down -v` would delete the saved data.
+name: nexops-cloud-data
+
+services:
+  cloud-db:
+    image: postgres:17-alpine
+    container_name: nexops-cloud-data
+    environment:
+      POSTGRES_DB: nexops
+      POSTGRES_USER: nexops
+      POSTGRES_PASSWORD: ${NEXOPS_CLOUD_DATA_PASSWORD:-nexops_cloud_data_local_only}
+    ports: ["127.0.0.1:5434:5432"]
+    volumes: [cloud_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexops -d nexops"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  cloud_data:
+    name: nexops_cloud_data

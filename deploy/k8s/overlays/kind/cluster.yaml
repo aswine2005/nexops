@@ -1,0 +1,11 @@
+# Local cluster for NexOps on Kubernetes: kind create cluster --config deploy/k8s/overlays/kind/cluster.yaml
+# (scripts/k8s/kind-up.sh does this). NodePorts are published on localhost only.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: nexops
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - { containerPort: 30080, hostPort: 8090, listenAddress: 127.0.0.1 }   # NexOps UI + API
+      - { containerPort: 30686, hostPort: 16687, listenAddress: 127.0.0.1 }  # Jaeger UI
+      - { containerPort: 30090, hostPort: 9091, listenAddress: 127.0.0.1 }   # Prometheus

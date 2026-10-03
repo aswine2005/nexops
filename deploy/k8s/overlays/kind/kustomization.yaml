@@ -1,0 +1,20 @@
+# Whole platform on a local kind cluster: NexOps, Prometheus, Jaeger and the payment-api Argo Rollout.
+# Images are local builds loaded with `kind load docker-image` (scripts/k8s/kind-up.sh).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../nexops
+  - ../../observability
+  - ../../payments
+images:
+  - { name: nexops-api, newName: nexops/api, newTag: local }
+  - { name: nexops-web, newName: nexops/web, newTag: local }
+  - { name: payment-api, newName: nexops/payment-api, newTag: PAYMENT_API_TAG }
+  - { name: traffic-generator, newName: nexops/traffic-generator, newTag: local }
+patches:
+  - path: nodeports.yaml
+  - target: { kind: ConfigMap, name: nexops-config }
+    patch: |-
+      - op: replace
+        path: /data/JAEGER_UI_URL
+        value: http://localhost:16687

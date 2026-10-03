@@ -1,0 +1,14 @@
+# In-cluster telemetry for NexOps: Prometheus (scrapes annotated pods, keeps the Argo Rollouts pod hash so canary and
+# stable pods can be compared) and Jaeger v2 (OTLP in, in-memory store). Logs are read through the Kubernetes API.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: observability
+resources:
+  - namespace.yaml
+  - prometheus.yaml
+  - jaeger.yaml
+configMapGenerator:
+  - name: prometheus-config
+    files: [prometheus.yml]
+  - name: jaeger-config
+    files: [jaeger.yaml=jaeger-config.yaml]

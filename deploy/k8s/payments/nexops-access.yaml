@@ -1,0 +1,13 @@
+# Lets NexOps execute policy-approved remediation (rollback/restart/scale) in this namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nexops-remediator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nexops-remediator
+subjects:
+  - kind: ServiceAccount
+    name: nexops
+    namespace: nexops

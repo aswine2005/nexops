@@ -1,0 +1,44 @@
+# The payments-db secret (key: password) is created by scripts/k8s/kind-up.sh or eks-up.sh.
+apiVersion: v1
+kind: Service
+metadata:
+  name: payments-db
+spec:
+  selector: { app: payments-db }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: payments-db
+spec:
+  serviceName: payments-db
+  replicas: 1
+  selector:
+    matchLabels: { app: payments-db }
+  template:
+    metadata:
+      labels: { app: payments-db }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          env:
+            - { name: POSTGRES_DB, value: payments }
+            - { name: POSTGRES_USER, value: payments }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: payments-db, key: password } }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ containerPort: 5432 }]
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "payments", "-d", "payments"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 1Gi } }

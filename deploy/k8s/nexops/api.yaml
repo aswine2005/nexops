@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: nexops-api
+spec:
+  selector: { app: nexops-api }
+  ports: [{ name: http, port: 8000, targetPort: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nexops-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: nexops-api }
+  template:
+    metadata:
+      labels: { app: nexops-api }
+    spec:
+      serviceAccountName: nexops
+      securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+      initContainers:
+        - name: migrate
+          image: nexops-api
+          command: ["alembic", "upgrade", "head"]
+          envFrom: [{ configMapRef: { name: nexops-config } }, { secretRef: { name: nexops-secrets } }]
+      containers:
+        - name: api
+          image: nexops-api
+          ports: [{ containerPort: 8000 }]
+          envFrom: [{ configMapRef: { name: nexops-config } }, { secretRef: { name: nexops-secrets } }]
+          readinessProbe:
+            httpGet: { path: /ready, port: 8000 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { memory: 512Mi }

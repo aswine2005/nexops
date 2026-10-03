@@ -1,0 +1,32 @@
+# Whole platform on EKS behind an internet-facing Network Load Balancer with Elastic IPs (AWS Load Balancer
+# Controller) and Caddy for HTTPS on <elastic-ip>.sslip.io, limited to your IP once the certificate is issued.
+# scripts/k8s/eks-up.sh renders this with the ECR registry, image tags, IRSA role and allowed CIDR filled in
+# (the UPPER_CASE placeholders below) and applies it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../nexops
+  - ../../observability
+  - ../../payments
+  - storageclass.yaml
+  - edge.yaml
+  - deployer-rbac.yaml
+images:
+  - { name: nexops-api, newName: ECR_REGISTRY/nexops-api, newTag: NEXOPS_TAG }
+  - { name: nexops-web, newName: ECR_REGISTRY/nexops-web, newTag: NEXOPS_TAG }
+  - { name: payment-api, newName: ECR_REGISTRY/payment-api, newTag: PAYMENT_API_TAG }
+  - { name: traffic-generator, newName: ECR_REGISTRY/traffic-generator, newTag: latest }
+patches:
+  - target: { kind: ServiceAccount, name: nexops }
+    patch: |-
+      - op: replace
+        path: /metadata/annotations/eks.amazonaws.com~1role-arn
+        value: NEXOPS_IRSA_ROLE_ARN
+  - target: { kind: ConfigMap, name: nexops-config }
+    patch: |-
+      - op: replace
+        path: /data/AWS_INTEGRATION_ENABLED
+        value: "true"
+      - op: add
+        path: /data/AWS_REGION
+        value: AWS_REGION_NAME

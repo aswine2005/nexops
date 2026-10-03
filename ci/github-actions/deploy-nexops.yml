@@ -1,0 +1,99 @@
+name: Deploy NexOps
+
+# Builds the NexOps API/web images, pushes them to ECR and rolls them out on the EC2 host through SSM.
+# Repository variables: AWS_REGION, AWS_ROLE_ARN, DEPLOY_BUCKET, EC2_INSTANCE_ID (all from terraform output).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - backend/**
+      - src/**
+      - index.html
+      - package.json
+      - package-lock.json
+      - Dockerfile.web
+      - deploy/aws/**
+      - deploy/nginx/**
+      - deploy/prometheus/**
+      - deploy/alloy/**
+      - deploy/grafana/**
+      - deploy/jaeger/**
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-nexops
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  PROJECT: ${{ vars.NEXOPS_PROJECT || 'nexops' }}
+
+jobs:
+  deploy:
+    # hosted.py down sets HOSTED_UP=false (nothing in AWS to deploy to); up sets it back to true.
+    if: vars.HOSTED_UP != 'false'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ env.PROJECT }}-api:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/${{ env.PROJECT }}-api:latest
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Build and push web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.web
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ env.PROJECT }}-web:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/${{ env.PROJECT }}-web:latest
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+      - name: Upload deployment bundle
+        run: |
+          for dir in aws prometheus alloy grafana jaeger; do
+            aws s3 sync "deploy/$dir" "s3://${{ vars.DEPLOY_BUCKET }}/bundle/$dir" --delete --exclude ".env" --exclude "versions.env"
+          done
+
+      - name: Roll out on EC2 through SSM
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ vars.EC2_INSTANCE_ID }}" \
+            --document-name AWS-RunShellScript \
+            --comment "NexOps ${GITHUB_SHA::7}" \
+            --parameters "commands=[\"aws s3 cp s3://${{ vars.DEPLOY_BUCKET }}/bundle/aws/deploy-platform.sh /tmp/deploy-platform.sh --region ${AWS_REGION}\",\"bash /tmp/deploy-platform.sh ${PROJECT} ${AWS_REGION} ${REGISTRY} ${{ vars.DEPLOY_BUCKET }} ${GITHUB_SHA}\"]" \
+            --query Command.CommandId --output text)
+          echo "SSM command $COMMAND_ID"
+          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "${{ vars.EC2_INSTANCE_ID }}" || true
+          aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "${{ vars.EC2_INSTANCE_ID }}" \
+            --query '{status:Status,stdout:StandardOutputContent,stderr:StandardErrorContent}' --output json
+          STATUS=$(aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "${{ vars.EC2_INSTANCE_ID }}" --query Status --output text)
+          test "$STATUS" = "Success"

@@ -1,0 +1,154 @@
+# NexOps platform on an EC2 Docker host. Deployed by ci/github-actions/deploy-nexops.yml via SSM.
+# Secrets come from SSM Parameter Store (/<project>/...) and are rendered into .env by render-env.sh.
+name: nexops
+
+x-nexops-env: &nexops-env
+  NEXOPS_ENV: production
+  DATABASE_URL: ${DATABASE_URL}
+  NEXOPS_SECRET_KEY: ${NEXOPS_SECRET_KEY}
+  NEXOPS_ADMIN_EMAIL: ${NEXOPS_ADMIN_EMAIL}
+  NEXOPS_ADMIN_PASSWORD: ${NEXOPS_ADMIN_PASSWORD}
+  NEXOPS_WEBHOOK_SECRET: ${NEXOPS_WEBHOOK_SECRET}
+  NEXOPS_PUBLIC_URL: ${NEXOPS_PUBLIC_URL}
+  NEXOPS_CORS_ORIGINS: ${NEXOPS_PUBLIC_URL}
+  NEXOPS_MONITOR_INTERVAL_SECONDS: "30"
+  PROMETHEUS_URL: http://prometheus:9090
+  LOKI_URL: http://loki:3100
+  JAEGER_URL: http://jaeger:16686
+  # Jaeger UI is reached through an SSM port-forward (see docs/AWS_RESOURCES.md).
+  JAEGER_UI_URL: http://localhost:16686
+  NEXOPS_NOTIFY_WEBHOOK_URL: ${NEXOPS_NOTIFY_WEBHOOK_URL:-}
+  NEXOPS_FLAGS_TOKEN: ${NEXOPS_FLAGS_TOKEN:-}
+  DOCKER_ENABLED: "true"
+  AWS_INTEGRATION_ENABLED: "true"
+  AWS_REGION: ${AWS_REGION}
+  GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+  GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+
+x-logging: &cloudwatch-logging
+  driver: awslogs
+  options:
+    awslogs-region: ${AWS_REGION}
+    awslogs-group: /${PROJECT}/platform
+    awslogs-create-group: "false"
+    mode: non-blocking
+
+networks:
+  default:
+    name: nexops-net
+
+services:
+  nexops-db:
+    image: postgres:17-alpine
+    profiles: ["local-db"]
+    environment:
+      POSTGRES_DB: nexops
+      POSTGRES_USER: nexops
+      POSTGRES_PASSWORD: ${NEXOPS_DB_PASSWORD}
+    volumes: [nexops_db:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexops -d nexops"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  nexops-migrate:
+    image: ${ECR_REGISTRY}/${PROJECT}-api:${NEXOPS_VERSION}
+    command: ["alembic", "upgrade", "head"]
+    environment: *nexops-env
+    logging: *cloudwatch-logging
+    restart: "no"
+
+  nexops-api:
+    image: ${ECR_REGISTRY}/${PROJECT}-api:${NEXOPS_VERSION}
+    group_add: ["${DOCKER_GID}"]
+    environment:
+      <<: *nexops-env
+      NEXOPS_RUN_WORKER_IN_API: "false"
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    depends_on:
+      nexops-migrate: { condition: service_completed_successfully }
+    logging: *cloudwatch-logging
+    restart: unless-stopped
+
+  nexops-worker:
+    image: ${ECR_REGISTRY}/${PROJECT}-api:${NEXOPS_VERSION}
+    command: ["python", "-m", "app.worker"]
+    group_add: ["${DOCKER_GID}"]
+    environment:
+      <<: *nexops-env
+      NEXOPS_RUN_WORKER_IN_API: "false"
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    depends_on:
+      nexops-migrate: { condition: service_completed_successfully }
+    healthcheck: { disable: true }
+    logging: *cloudwatch-logging
+    restart: unless-stopped
+
+  nexops-web:
+    image: ${ECR_REGISTRY}/${PROJECT}-web:${NEXOPS_VERSION}
+    depends_on: [nexops-api]
+    logging: *cloudwatch-logging
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.8-alpine
+    ports: ["80:80", "443:443"]
+    environment:
+      NEXOPS_DOMAIN: ${NEXOPS_DOMAIN}
+      ACME_EMAIL: ${NEXOPS_ADMIN_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [nexops-web]
+    logging: *cloudwatch-logging
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/jaeger:2.5.0
+    command: ["--config", "/etc/jaeger/config.yaml"]
+    volumes: [../jaeger/config.yaml:/etc/jaeger/config.yaml:ro]
+    ports: ["127.0.0.1:16686:16686"]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=15d", "--web.enable-lifecycle"]
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports: ["127.0.0.1:9090:9090"]
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.4.2
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes: [loki_data:/loki]
+    ports: ["127.0.0.1:3100:3100"]
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.7.1
+    command: ["run", "--server.http.listen-addr=0.0.0.0:12345", "--storage.path=/var/lib/alloy/data", "/etc/alloy/config.alloy"]
+    volumes:
+      - ../alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+    volumes: [../grafana/provisioning:/etc/grafana/provisioning:ro]
+    ports: ["127.0.0.1:3000:3000"]
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
+  nexops_db:
+  prometheus_data:
+  loki_data:

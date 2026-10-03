@@ -1,0 +1,30 @@
+# Argo Rollouts asks NexOps for a verdict on the canary pods (web metric provider).
+# NexOps compares canary vs stable error rate, P99 latency and business success in Prometheus and records each
+# answer on the release (Deployments -> canary analysis, AI Agents -> Canary Analysis Agent).
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: nexops-canary
+spec:
+  args:
+    - name: canary-hash
+    - name: stable-hash
+    - name: token
+      valueFrom:
+        secretKeyRef: { name: nexops-tokens, key: analysis-token }
+  metrics:
+    - name: nexops-verdict
+      interval: 20s
+      count: 3
+      failureLimit: 0
+      inconclusiveLimit: 2
+      successCondition: result.verdict == "pass"
+      failureCondition: result.verdict == "fail"
+      provider:
+        web:
+          url: "http://nexops-api.nexops.svc:8000/api/analysis/canary?application=payment-api&canary_hash={{args.canary-hash}}&stable_hash={{args.stable-hash}}&window=1m"
+          headers:
+            - key: Authorization
+              value: "Bearer {{args.token}}"
+          timeoutSeconds: 20
+          jsonPath: "{$}"

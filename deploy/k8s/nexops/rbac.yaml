@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nexops
+  annotations:
+    # The EKS overlay sets this to the nexops_service_account_role_arn output of infra/terraform/eks
+    # (IRSA for CloudWatch/EC2/ECR read).
+    eks.amazonaws.com/role-arn: ""
+---
+# Read workload health anywhere in the cluster.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nexops-observer
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events", "nodes", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["rollouts", "analysisruns", "analysistemplates", "experiments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nexops-observer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nexops-observer
+subjects:
+  - kind: ServiceAccount
+    name: nexops
+    namespace: nexops
+---
+# Remediation (set image / restart / scale) is granted only in namespaces NexOps may change.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nexops-remediator
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    verbs: ["get", "patch", "update"]
+  # Argo Rollouts: rollback (set image, which skips canary steps for recent revisions), restart (restartAt), scale.
+  - apiGroups: ["argoproj.io"]
+    resources: ["rollouts", "rollouts/scale"]
+    verbs: ["get", "patch", "update"]

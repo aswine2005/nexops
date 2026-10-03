@@ -1,0 +1,58 @@
+# Monitored services on the EC2 host (separate compose project from the platform).
+# Deployed by ci/github-actions/deploy-payment-api.yml; versions live in versions.env so a platform
+# redeploy never touches application releases (or undoes a NexOps rollback).
+name: apps
+
+networks:
+  default:
+    name: nexops-net
+    external: true
+
+services:
+  payments-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: payments
+      POSTGRES_USER: payments
+      POSTGRES_PASSWORD: ${PAYMENTS_DB_PASSWORD}
+    volumes: [payments_db:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payments -d payments"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  payment-api:
+    image: ${ECR_REGISTRY}/payment-api:${PAYMENT_API_VERSION}
+    container_name: payment-api
+    labels:
+      nexops.application: payment-api
+    environment:
+      DB_PASSWORD: ${PAYMENTS_DB_PASSWORD}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      DEPLOY_ENVIRONMENT: production
+      NEXOPS_FLAGS_URL: http://nexops-api:8000/api/flags/evaluate?application=payment-api
+      NEXOPS_FLAGS_TOKEN: ${NEXOPS_FLAGS_TOKEN:-}
+    depends_on:
+      payments-db: { condition: service_healthy }
+    # awslogs ships to CloudWatch Logs; Docker dual logging keeps `docker logs` (and Alloy/NexOps) working.
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION}
+        awslogs-group: /${PROJECT}/payment-api
+        awslogs-create-group: "false"
+        mode: non-blocking
+    restart: unless-stopped
+
+  traffic-generator:
+    image: ${ECR_REGISTRY}/traffic-generator:latest
+    profiles: ["demo-traffic"]
+    environment:
+      TARGET_URL: http://payment-api:8000
+      REQUESTS_PER_SECOND: "5"
+    restart: unless-stopped
+
+volumes:
+  payments_db:

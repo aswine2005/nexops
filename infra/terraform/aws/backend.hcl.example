@@ -1,0 +1,7 @@
+# cp backend.hcl.example backend.hcl, then: terraform init -backend-config=backend.hcl
+# Create the bucket once (versioning on, public access blocked); it is deliberately not managed by this stack.
+bucket       = "nexops-tfstate-<account-id>"
+key          = "nexops/aws.tfstate"
+region       = "ap-south-1"
+encrypt      = true
+use_lockfile = true

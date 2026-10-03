@@ -1,0 +1,46 @@
+# What the GitHub Actions deploy role (EKS access entry group "nexops-deployers") may do:
+# change the payment-api Rollout image and report to NexOps through a port-forward (no public webhook needed).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nexops-deployer
+  namespace: payments
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["rollouts"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["analysisruns"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nexops-deployer
+  namespace: payments
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: nexops-deployer }
+subjects: [{ apiGroup: rbac.authorization.k8s.io, kind: Group, name: nexops-deployers }]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nexops-reporter
+  namespace: nexops
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nexops-reporter
+  namespace: nexops
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: nexops-reporter }
+subjects: [{ apiGroup: rbac.authorization.k8s.io, kind: Group, name: nexops-deployers }]

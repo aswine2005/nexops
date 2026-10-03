@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: payments
+resources:
+  - namespace.yaml
+  - database.yaml
+  - payment-api.yaml
+  - analysis.yaml
+  - traffic.yaml
+  - nexops-access.yaml
+# Secrets payments-db (password) and nexops-tokens (flags-token, analysis-token) are created by the k8s scripts.
+# Image names are placeholders; the overlays point them at local builds (kind) or ECR (eks).

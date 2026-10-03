@@ -1,0 +1,45 @@
+#!/bin/bash
+# Bootstraps the NexOps Docker host (Amazon Linux 2023). Application deploys arrive later through SSM.
+set -euxo pipefail
+dnf update -y
+dnf install -y docker amazon-cloudwatch-agent jq
+systemctl enable --now docker
+usermod -aG docker ec2-user
+
+# 1 GiB swap as headroom on small instances
+if [ ! -f /swapfile ]; then
+  dd if=/dev/zero of=/swapfile bs=1M count=1024
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
+# Docker Compose v2 plugin
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -fsSL "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64" -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+# Rotate local Docker logs (CloudWatch keeps the long-term copy).
+cat > /etc/docker/daemon.json <<'JSON'
+{ "log-driver": "json-file", "log-opts": { "max-size": "20m", "max-file": "5" } }
+JSON
+systemctl restart docker
+
+# Host memory and disk metrics for NexOps saturation signals (namespace CWAgent).
+cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'JSON'
+{
+  "metrics": {
+    "namespace": "CWAgent",
+    "append_dimensions": { "InstanceId": "$${aws:InstanceId}" },
+    "metrics_collected": {
+      "mem": { "measurement": ["mem_used_percent"], "metrics_collection_interval": 60 },
+      "disk": { "measurement": ["used_percent"], "resources": ["/"], "metrics_collection_interval": 60 }
+    }
+  }
+}
+JSON
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+
+mkdir -p /opt/nexops
+echo "${project} host ready in ${region}" > /opt/nexops/BOOTSTRAPPED

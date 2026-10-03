@@ -1,0 +1,14 @@
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY index.html tsconfig.json vite.config.ts tailwind.config.js postcss.config.js ./
+COPY src ./src
+RUN npm run build
+
+FROM nginx:1.27-alpine
+ENV NEXOPS_API_UPSTREAM=nexops-api:8000 \
+    NGINX_RESOLVER=127.0.0.11
+COPY deploy/nginx/default.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=build /app/dist /usr/share/nginx/html
+EXPOSE 8080

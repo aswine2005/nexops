@@ -1,0 +1,22 @@
+# cp terraform.tfvars.example terraform.tfvars  (terraform.tfvars is git-ignored)
+project           = "nexops"
+region            = "us-east-1"
+github_repository = "your-github-user/nexops"
+github_branch     = "main"
+# If `gh api repos/OWNER/REPO/actions/oidc/customization/sub` shows "use_immutable_subject": true, set both ids:
+# github_owner_id      = 123456
+# github_repository_id = 7890123
+admin_email       = "you@example.com"
+
+# Who may open the NexOps UI (your IP: curl -s https://checkip.amazonaws.com).
+allowed_cidrs = ["203.0.113.10/32"]
+# GitHub-hosted runners call the webhook from many IP ranges. Either allow them (HMAC protects the
+# webhook, login protects the UI) or run a self-hosted runner inside the VPC and leave this empty.
+webhook_cidrs = ["0.0.0.0/0"]
+
+instance_type = "t3.small"
+enable_rds    = false
+
+# Optional, kept in SSM Parameter Store as SecureString:
+# groq_api_key = "gsk_..."
+# github_token = "github_pat_..."

@@ -1,0 +1,183 @@
+# Local NexOps stack with a real monitored service.
+#   cp deploy/.env.example deploy/.env      # then edit secrets
+#   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build
+# NexOps UI http://localhost:8080 · API http://localhost:8000/docs · Prometheus :9090 · Grafana :3000 · Jaeger :16686 · Payment API :8081
+name: nexops
+
+x-nexops-env: &nexops-env
+  NEXOPS_ENV: ${NEXOPS_ENV:-development}
+  DATABASE_URL: postgresql+psycopg://nexops:${NEXOPS_DB_PASSWORD:-nexops_local_dev_only}@nexops-db:5432/nexops
+  NEXOPS_SECRET_KEY: ${NEXOPS_SECRET_KEY:?Set NEXOPS_SECRET_KEY in deploy/.env}
+  NEXOPS_ADMIN_EMAIL: ${NEXOPS_ADMIN_EMAIL:-}
+  NEXOPS_ADMIN_PASSWORD: ${NEXOPS_ADMIN_PASSWORD:-}
+  NEXOPS_ADMIN_NAME: ${NEXOPS_ADMIN_NAME:-NexOps Admin}
+  NEXOPS_WEBHOOK_SECRET: ${NEXOPS_WEBHOOK_SECRET:?Set NEXOPS_WEBHOOK_SECRET in deploy/.env}
+  NEXOPS_PUBLIC_URL: ${NEXOPS_PUBLIC_URL:-http://localhost:8080}
+  NEXOPS_CORS_ORIGINS: http://localhost:8080,http://localhost:5173,http://127.0.0.1:5173
+  NEXOPS_MONITOR_INTERVAL_SECONDS: ${NEXOPS_MONITOR_INTERVAL_SECONDS:-15}
+  NEXOPS_DEPLOYMENT_VERIFICATION_MINUTES: ${NEXOPS_DEPLOYMENT_VERIFICATION_MINUTES:-5}
+  PROMETHEUS_URL: http://prometheus:9090
+  PROMETHEUS_RATE_WINDOW: ${PROMETHEUS_RATE_WINDOW:-1m}
+  LOKI_URL: http://loki:3100
+  JAEGER_URL: http://jaeger:16686
+  JAEGER_UI_URL: http://localhost:16686
+  NEXOPS_NOTIFY_WEBHOOK_URL: ${NEXOPS_NOTIFY_WEBHOOK_URL:-}
+  NEXOPS_FLAGS_TOKEN: ${NEXOPS_FLAGS_TOKEN:-}
+  DOCKER_ENABLED: "true"
+  GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+  GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+  AWS_INTEGRATION_ENABLED: ${AWS_INTEGRATION_ENABLED:-false}
+  AWS_REGION: ${AWS_REGION:-us-east-1}
+
+services:
+  nexops-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: nexops
+      POSTGRES_USER: nexops
+      POSTGRES_PASSWORD: ${NEXOPS_DB_PASSWORD:-nexops_local_dev_only}
+    ports: ["127.0.0.1:${NEXOPS_DB_HOST_PORT:-5433}:5432"]
+    volumes: [nexops_db:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexops -d nexops"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  nexops-migrate:
+    build: ../backend
+    image: nexops/api:${NEXOPS_VERSION:-local}
+    command: ["alembic", "upgrade", "head"]
+    environment: *nexops-env
+    depends_on:
+      nexops-db: { condition: service_healthy }
+    restart: "no"
+
+  nexops-api:
+    image: nexops/api:${NEXOPS_VERSION:-local}
+    # Root is needed only to read the local Docker socket; on servers use the docker group instead.
+    user: root
+    environment:
+      <<: *nexops-env
+      NEXOPS_RUN_WORKER_IN_API: "false"
+    ports: ["127.0.0.1:8000:8000"]
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    depends_on:
+      nexops-migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  nexops-worker:
+    image: nexops/api:${NEXOPS_VERSION:-local}
+    command: ["python", "-m", "app.worker"]
+    user: root
+    environment:
+      <<: *nexops-env
+      NEXOPS_RUN_WORKER_IN_API: "false"
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    depends_on:
+      nexops-migrate: { condition: service_completed_successfully }
+    healthcheck: { disable: true }
+    restart: unless-stopped
+
+  nexops-web:
+    build:
+      context: ..
+      dockerfile: Dockerfile.web
+    image: nexops/web:${NEXOPS_VERSION:-local}
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on: [nexops-api]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- monitored sample service
+  payments-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: payments
+      POSTGRES_USER: payments
+      POSTGRES_PASSWORD: ${PAYMENTS_DB_PASSWORD:-payments_local_dev_only}
+    volumes: [payments_db:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payments -d payments"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  payment-api:
+    build:
+      context: ../examples/payment-api
+      args: { APP_VERSION: "${PAYMENT_API_VERSION:-v1.0.0}" }
+    image: nexops/payment-api:${PAYMENT_API_VERSION:-v1.0.0}
+    container_name: payment-api
+    labels:
+      nexops.application: payment-api
+    environment:
+      DB_PASSWORD: ${PAYMENTS_DB_PASSWORD:-payments_local_dev_only}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      DEPLOY_ENVIRONMENT: production
+      NEXOPS_FLAGS_URL: http://nexops-api:8000/api/flags/evaluate?application=payment-api
+      NEXOPS_FLAGS_TOKEN: ${NEXOPS_FLAGS_TOKEN:-}
+    ports: ["127.0.0.1:8081:8000"]
+    depends_on:
+      payments-db: { condition: service_healthy }
+    restart: unless-stopped
+
+  traffic-generator:
+    build: ../examples/traffic-generator
+    image: nexops/traffic-generator:local
+    environment:
+      TARGET_URL: http://payment-api:8000
+      REQUESTS_PER_SECOND: ${TRAFFIC_RPS:-8}
+    depends_on: [payment-api]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- observability
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d", "--web.enable-lifecycle"]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports: ["127.0.0.1:9090:9090"]
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.4.2
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    ports: ["127.0.0.1:3100:3100"]
+    volumes: [loki_data:/loki]
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.7.1
+    command: ["run", "--server.http.listen-addr=0.0.0.0:12345", "--storage.path=/var/lib/alloy/data", "/etc/alloy/config.alloy"]
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on: [loki]
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/jaeger:2.5.0
+    command: ["--config", "/etc/jaeger/config.yaml"]
+    volumes: [./jaeger/config.yaml:/etc/jaeger/config.yaml:ro]
+    ports: ["127.0.0.1:16686:16686"]
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin_local_dev_only}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on: [prometheus, loki]
+    restart: unless-stopped
+
+volumes:
+  nexops_db:
+  payments_db:
+  prometheus_data:
+  loki_data:

@@ -1,0 +1,17 @@
+# HTTPS entry point for NexOps on the EC2 host. Certificates are obtained and renewed automatically
+# (Let's Encrypt, falling back to ZeroSSL). NEXOPS_DOMAIN defaults to <public-ip>.sslip.io; set
+# /<project>/NEXOPS_DOMAIN in SSM to use your own domain (point its A record at the Elastic IP first).
+{
+	email {$ACME_EMAIL}
+}
+
+{$NEXOPS_DOMAIN} {
+	encode gzip
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy nexops-web:8080
+}
+
+# Any other HTTP request (e.g. the bare IP) goes to the canonical HTTPS hostname.
+http:// {
+	redir https://{$NEXOPS_DOMAIN}{uri} 308
+}

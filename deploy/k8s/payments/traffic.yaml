@@ -1,0 +1,23 @@
+# Synthetic customers so the canary has real requests to be judged on.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traffic-generator
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: traffic-generator }
+  template:
+    metadata:
+      labels: { app: traffic-generator }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+      containers:
+        - name: traffic
+          image: traffic-generator
+          env:
+            - { name: TARGET_URL, value: "http://payment-api:8000" }
+            - { name: REQUESTS_PER_SECOND, value: "8" }
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 64Mi }

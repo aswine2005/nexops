@@ -1,0 +1,4 @@
+{
+  "endpoint": "http://10.255.255.1:9000/score",
+  "timeout_seconds": 1.5
+}

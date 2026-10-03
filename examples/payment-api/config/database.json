@@ -1,0 +1,10 @@
+{
+  "host": "payments-db",
+  "port": 5432,
+  "database": "payments",
+  "table": "payments",
+  "user": "payments",
+  "connect_timeout_seconds": 2,
+  "retries": 3,
+  "retry_backoff_seconds": 0.25
+}

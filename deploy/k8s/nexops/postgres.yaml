@@ -1,0 +1,45 @@
+# In-cluster PostgreSQL for evaluation clusters. For production point DATABASE_URL at Amazon RDS and remove this file
+# from kustomization.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nexops-db
+spec:
+  selector: { app: nexops-db }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nexops-db
+spec:
+  serviceName: nexops-db
+  replicas: 1
+  selector:
+    matchLabels: { app: nexops-db }
+  template:
+    metadata:
+      labels: { app: nexops-db }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          env:
+            - { name: POSTGRES_DB, value: nexops }
+            - { name: POSTGRES_USER, value: nexops }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: nexops-secrets, key: NEXOPS_DB_PASSWORD } }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ containerPort: 5432 }]
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "nexops", "-d", "nexops"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 512Mi }
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 2Gi } }
